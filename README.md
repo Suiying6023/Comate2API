@@ -12,12 +12,12 @@
 
 ## 使用
 
-Windows 双击 `启动服务.bat`。源码、凭证模板和部署文件都在 `主程序/`。
+Windows 双击 `启动服务.bat`。源码、凭证模板和部署文件都在 `app/`。
 
-本机已登录 Comate 会自动读取凭证；否则在 `主程序/` 内复制 `cred.example.json` 为 `cred.json`，填入自己的 license。
+本机已登录 Comate 会自动读取凭证；否则在 `app/` 内复制 `cred.example.json` 为 `cred.json`，填入自己的 license。
 
 ```bash
-python 主程序/start.py
+python app/start.py
 ```
 
 按 Ctrl+C 停止；Windows 同一入口支持 `启动服务.bat start / stop / restart / status`（`start` 为后台启动）。
@@ -31,7 +31,7 @@ python 主程序/start.py
 Docker：
 
 ```bash
-cd 主程序
+cd app
 cp .env.example .env
 # 在 .env 填入自己的 COMATE_LICENSE
 docker compose up -d

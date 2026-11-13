@@ -111,7 +111,7 @@ COMATE_COOLDOWN=300
     print("  .gitignore（已加入凭证保护）")
     print()
     print("用法：")
-    print("  cd 主程序    # 从项目根目录进入")
+    print("  cd app    # 从项目根目录进入")
     print("  cp .env.example .env")
     print("  # 编辑 .env 填入 license")
     print("  docker compose up -d")
@@ -149,7 +149,7 @@ WantedBy=multi-user.target
 """
     import sys
 
-    install_dir = "/opt/comate2api/主程序" if os.name == "nt" else str(BASE)
+    install_dir = "/opt/comate2api/app" if os.name == "nt" else str(BASE)
     python_bin = "/usr/bin/python3" if os.name == "nt" else sys.executable
     content = unit.replace("__DIR__", install_dir).replace("__PYTHON__", python_bin)
     out = BASE / "comate2api.service"
@@ -171,7 +171,7 @@ WantedBy=multi-user.target
     print("  service.env.example")
     print()
     print("用法：")
-    print("  cd 主程序    # 从项目根目录进入")
+    print("  cd app    # 从项目根目录进入")
     print("  cp service.env.example service.env")
     print("  chmod 600 service.env")
     print("  # 编辑 service.env 填入 license 和 token")
@@ -192,7 +192,7 @@ def gen_windows_autostart():
     print("  启动服务.bat start / stop / restart / status   后台启动、停止、重启、状态")
     print()
     print("  Windows 下如需常驻，建议用 Docker Desktop 跑：")
-    print("    cd 主程序 && docker compose up -d    # 自带 restart: unless-stopped")
+    print("    cd app && docker compose up -d    # 自带 restart: unless-stopped")
     print()
 
 

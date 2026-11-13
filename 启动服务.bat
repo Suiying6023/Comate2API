@@ -3,7 +3,7 @@ chcp 65001 >nul 2>&1
 setlocal EnableExtensions DisableDelayedExpansion
 title comate2api 服务
 
-set "APPDIR=%~dp0主程序"
+set "APPDIR=%~dp0app"
 cd /d "%APPDIR%" || exit /b 1
 set "PIDFILE=%APPDIR%\server.pid"
 set "LOGFILE=%APPDIR%\server.log"

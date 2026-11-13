@@ -6,22 +6,22 @@ Wants=network-online.target
 [Service]
 Type=simple
 # 按实际安装路径改这两行
-WorkingDirectory=/opt/comate2api/主程序
-ExecStart=/usr/bin/python3 /opt/comate2api/主程序/start.py
+WorkingDirectory=/opt/comate2api/app
+ExecStart=/usr/bin/python3 /opt/comate2api/app/start.py
 Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
 # 凭证从独立文件读，不写死在 unit 里
-EnvironmentFile=-/opt/comate2api/主程序/service.env
+EnvironmentFile=-/opt/comate2api/app/service.env
 
 # 安全加固：服务不需要写系统任何东西
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=/opt/comate2api/主程序
+ReadWritePaths=/opt/comate2api/app
 
 [Install]
 WantedBy=multi-user.target
