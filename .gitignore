@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+service.env
+service.env.*
+!service.env.example
+cred.json
+config.json
+connection.json
+server.pid
+server.log
+data/
+__pycache__/
+*.py[cod]
+.venv/

@@ -1,0 +1,3 @@
+* text=auto eol=lf
+# Preserve CRLF in UTF-8 batch files, including downloaded source archives.
+*.bat -text whitespace=cr-at-eol

@@ -1,0 +1,27 @@
+[Unit]
+Description=comate2api - Baidu Comate OpenAI-compatible API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 按实际安装路径改这两行
+WorkingDirectory=/opt/comate2api
+ExecStart=/usr/bin/python3 /opt/comate2api/start.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# 凭证从独立文件读，不写死在 unit 里
+EnvironmentFile=-/opt/comate2api/service.env
+
+# 安全加固：服务不需要写系统任何东西
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/comate2api
+
+[Install]
+WantedBy=multi-user.target

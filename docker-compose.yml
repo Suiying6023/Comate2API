@@ -1,0 +1,29 @@
+services:
+  comate2api:
+    build: .
+    container_name: comate2api
+    restart: unless-stopped
+    ports:
+      - "8181:8181"
+    environment:
+      # 凭证用 .env 或下面直接写，别提交到 git
+      COMATE_LICENSE: ${COMATE_LICENSE:-}
+      COMATE_LICENSES: ${COMATE_LICENSES:-}
+      COMATE_API_TOKEN: ${COMATE_API_TOKEN:-}
+      COMATE_RPS: ${COMATE_RPS:-2}
+      COMATE_COOLDOWN: ${COMATE_COOLDOWN:-300}
+      COMATE_HOST: 0.0.0.0
+      COMATE_PORT: 8181
+      COMATE_DATA_DIR: /app/data
+    volumes:
+      # 持久化 config.json，key 不会因为重建容器而变
+      - ./data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8181/health',timeout=3).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
