@@ -42,8 +42,11 @@ Comate 2API — 把文心快码的登录态封装成 OpenAI 兼容接口（带�
 """
 
 import argparse
+import base64
+import hashlib
 import json
 import math
+import mimetypes
 import os
 import socket
 import sys
@@ -57,6 +60,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.client import IncompleteRead
 
 import riskguard
+from openai_compat import AGENT_VERSION, CompletionRequest, InputError, NativeTools
 from riskguard import (
     CircuitBreaker,
     ClientFingerprint,
@@ -226,7 +230,7 @@ class ComateClient:
             print(f"[warn] 在线模型列表拉取失败，使用内置快照: {detail}", file=sys.stderr)
             return list(DEFAULT_MODELS)
 
-    def create_conversation(self, query, timeout=60):
+    def create_conversation(self, query, timeout=60, agent_info=None):
         """第一步：让服务端分配 conversationId。"""
         payload = {
             "username": self.license,
@@ -237,6 +241,8 @@ class ComateClient:
             "uploadBaseInfo": self._upload_base_info(),
             "agentInfo": {"agentName": "Agent"},
         }
+        if agent_info is not None:
+            payload["agentInfo"] = agent_info
         # 业务码已在 _post_json 里校验过，这里只取数据
         data = self._post_json("/rest/autowork/v2/conversation", payload, timeout)
         conv_id = (data.get("data") or {}).get("id")
@@ -248,7 +254,7 @@ class ComateClient:
             )
         return conv_id
 
-    def create_task(self, conv_id, timeout=60):
+    def create_task(self, conv_id, timeout=60, agent_info=None):
         """第二步：让服务端分配 taskId。"""
         payload = {
             "agentInfo": {
@@ -262,6 +268,8 @@ class ComateClient:
             "ideVersion": self.fp.ide_version,
             "pluginVersion": self.fp.plugin_version,
         }
+        if agent_info is not None:
+            payload["agentInfo"] = agent_info
         data = self._post_json("/rest/autowork/v2/task", payload, timeout)
         task_id = (data.get("data") or {}).get("taskId")
         if not task_id:
@@ -272,7 +280,42 @@ class ComateClient:
             )
         return task_id
 
-    def open_stream(self, conv_id, task_id, model_id, query, timeout=CONNECT_TIMEOUT):
+    def upload_images(self, images, deadline):
+        uploaded = []
+        for index, image in enumerate(images, 1):
+            data, mime = image["data"], image["mime"]
+            if data is None:
+                # 图片外链使用独立请求，Comate 鉴权只发给 Comate。
+                request = urllib.request.Request(image["url"], headers={"User-Agent": "comate2api"})
+                try:
+                    with urllib.request.urlopen(request, timeout=remaining_timeout(deadline, CONNECT_TIMEOUT)) as response:
+                        data = response.read()
+                        mime = response.headers.get_content_type()
+                except (urllib.error.URLError, OSError, IncompleteRead):
+                    raise InputError("图片 URL 下载失败，请检查链接或使用 base64 data URL")
+                if not mime.startswith("image/"):
+                    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+                        mime = "image/png"
+                    elif data.startswith(b"\xff\xd8\xff"):
+                        mime = "image/jpeg"
+                    elif data.startswith((b"GIF87a", b"GIF89a")):
+                        mime = "image/gif"
+                    elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+                        mime = "image/webp"
+                    else:
+                        raise InputError("图片 URL 未返回图片数据")
+            filename = "image-%d%s" % (index, mimetypes.guess_extension(mime) or ".img")
+            result = self._post_json("/rest/autowork/v1/file/upload", {
+                "fileName": filename, "contentType": mime, "scene": "Composer",
+                "fileData": base64.b64encode(data).decode("ascii"),
+            }, timeout=remaining_timeout(deadline, CONNECT_TIMEOUT))
+            image_id = (result.get("data") or {}).get("id")
+            if image_id is None:
+                raise UpstreamError(riskguard.RiskSignal(RiskLevel.WARN, "image_upload", "图片上传响应缺少 id"))
+            uploaded.append({"id": image_id, "name": filename, "url": ""})
+        return [{"type": "IMAGE", "imageIds": [i["id"] for i in uploaded], "images": uploaded}] if uploaded else []
+
+    def open_stream(self, conv_id, task_id, model_id, query, timeout=CONNECT_TIMEOUT, request=None, tool_results=None):
         """第三步：发起推理，返回已打开的连接供调用方流式读取。
 
         返回 response。调用方负责关闭。
@@ -306,6 +349,15 @@ class ComateClient:
                 }
             ],
         }
+        if request is not None:
+            payload.update(
+                agentInfo=request.agent_info, agentVersion=AGENT_VERSION,
+                hasMcp=bool(request.active_tools), isDelegateSubtask=request.buffered,
+                contexts=getattr(request, "contexts", []),
+                isFirstQuery=request.resume is None, isUserQuery=request.resume is None,
+            )
+            if request.resume is not None:
+                payload.update(query="", toolUseResults=tool_results)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = self._headers()
         headers["Accept"] = "text/event-stream"
@@ -343,7 +395,7 @@ class ComateClient:
 def parse_frame(obj):
     """解析单个 SSE 帧，返回 (kind, payload)。
 
-    kind: answer | reasoning | usage | exception | heartbeat | other
+    kind: answer | reasoning | tool | usage | exception | heartbeat | other
     """
     content = obj.get("content") or {}
     ctype = content.get("type")
@@ -357,6 +409,8 @@ def parse_frame(obj):
         return "heartbeat", None
     if ctype == "EXCEPTION":
         return "exception", detail.get("exceptionMsg") or "未知错误"
+    if isinstance(ctype, str) and ctype.startswith(("FUNCTION_CALL_", "TOOL_CALL_")):
+        return "tool", content
     if ctype == "TOKEN_USAGE" and isinstance(detail.get("usage"), dict):
         return "usage", detail["usage"]
     return "other", None
@@ -486,6 +540,50 @@ class Scheduler:
         self.usage = usage
         self.fp = fp
         self._client_cache = {}
+        self._session_lock = threading.Lock()
+        self._tool_sessions = {}
+
+    def resume_for(self, request, model_id):
+        if not request.tool_results:
+            return None
+        keys = {r["id"] for r in request.tool_results}
+        with self._session_lock:
+            now = time.monotonic()
+            self._tool_sessions = {k: s for k, s in self._tool_sessions.items() if s["expires"] > now}
+            session = self._tool_sessions.get(request.tool_results[0]["id"])
+            # 进程重启、外部生成的工具历史或换模型时，使用完整历史新建任务。
+            if session is None or session["model_id"] != model_id:
+                return None
+            if session["owner"] != request.owner or keys != set(session["bindings"]):
+                raise InputError("工具结果与当前会话不匹配")
+            for key in keys:
+                expected = session["bindings"][key]["call"]["function"]
+                history = request.history_calls[key]
+                if history["name"] != expected["name"] or history["arguments"] != json.loads(expected["arguments"]):
+                    raise InputError("工具调用历史与已返回的调用不一致")
+            return session
+
+    def tool_results_for(self, request):
+        if request.resume is None:
+            return None
+        return [{**request.resume["bindings"][r["id"]]["native"], "success": True, "message": r["content"]}
+                for r in request.tool_results]
+
+    def remember_tools(self, request, model_id, conv_id, task_id, bindings):
+        with self._session_lock:
+            now = time.monotonic()
+            self._tool_sessions = {k: s for k, s in self._tool_sessions.items() if s["expires"] > now}
+            if request.resume is not None:
+                for key in request.resume["bindings"]:
+                    if self._tool_sessions.get(key) is request.resume:
+                        del self._tool_sessions[key]
+            if bindings:
+                session = {"credential_id": request.credential_id, "model_id": model_id,
+                           "conv_id": conv_id, "task_id": task_id, "owner": request.owner,
+                           "expires": time.monotonic() + 1800,
+                           "bindings": {b["key"]: b for b in bindings}}
+                for key in session["bindings"]:
+                    self._tool_sessions[key] = session
 
     def client_for(self, cred_id):
         c = self._client_cache.get(cred_id)
@@ -512,7 +610,7 @@ class Scheduler:
                 )
             )
 
-    def run_chain(self, query, model_id, on_frame=None):
+    def run_chain(self, query, model_id, on_frame=None, request=None):
         """执行完整链路。
 
         on_frame(obj, kind, payload) 会被每个 SSE 帧调用；返回 False 则中止读取。
@@ -523,6 +621,7 @@ class Scheduler:
         last_error = None
         tried = set()
         deadline = time.monotonic() + REQUEST_TIMEOUT
+        resume = request.resume if request is not None else None
 
         # 没配凭证时给出明确指引，而不是抛一个看不懂的上游错误
         if not any(c.get("license") for c in self.pool.creds.values()):
@@ -535,7 +634,7 @@ class Scheduler:
                 )
             )
 
-        for _attempt in range(len(self.pool.healths)):
+        for _attempt in range(1 if resume is not None else len(self.pool.healths)):
             remaining_timeout(deadline, REQUEST_TIMEOUT)
             if not self.breaker.allow():
                 snap = self.breaker.snapshot()
@@ -552,11 +651,17 @@ class Scheduler:
             attempted = False
             had_output = False
             had_answer = False
+            had_tool = False
             frames = []
             resp = None
             conv_id = task_id = None
             try:
-                cred_id, _cred = self.pool.acquire(exclude=tried)
+                if resume is not None:
+                    cred_id = resume["credential_id"]
+                    if cred_id not in self.pool.creds or not self.pool.healths[cred_id].available():
+                        raise UpstreamError(riskguard.RiskSignal(RiskLevel.WARN, "no_credential", "工具会话使用的凭证暂不可用"))
+                else:
+                    cred_id, _cred = self.pool.acquire(exclude=tried)
                 if not cred_id:
                     if last_error:
                         raise last_error
@@ -567,10 +672,18 @@ class Scheduler:
                 self._wait_turn(timeout=remaining_timeout(deadline, 10.0))
                 client = self.client_for(cred_id)
                 attempted = True
-                conv_id = client.create_conversation(query, timeout=remaining_timeout(deadline, 60))
-                task_id = client.create_task(conv_id, timeout=remaining_timeout(deadline, 60))
+                if request is not None:
+                    request.credential_id = cred_id
+                    request.contexts = client.upload_images(request.images, deadline) if resume is None else []
+                if resume is not None:
+                    conv_id, task_id = resume["conv_id"], resume["task_id"]
+                else:
+                    options = {"agent_info": request.agent_info} if request is not None else {}
+                    conv_id = client.create_conversation(query, timeout=remaining_timeout(deadline, 60), **options)
+                    task_id = client.create_task(conv_id, timeout=remaining_timeout(deadline, 60), **options)
+                options = {"request": request, "tool_results": self.tool_results_for(request)} if request is not None else {}
                 resp = client.open_stream(conv_id, task_id, model_id, query,
-                                          timeout=remaining_timeout(deadline, CONNECT_TIMEOUT))
+                                          timeout=remaining_timeout(deadline, CONNECT_TIMEOUT), **options)
 
                 completed = False
                 answer_end = False
@@ -605,10 +718,12 @@ class Scheduler:
                     if kind == "answer" and detail.get("reasoningDelta"):
                         events.insert(0, ("reasoning", detail["reasoningDelta"]))
                     for kind, payload in events:
-                        if kind in ("answer", "reasoning"):
+                        if kind in ("answer", "reasoning", "tool"):
                             had_output = True
                         if kind == "answer":
                             had_answer = True
+                        if kind == "tool":
+                            had_tool = True
                         if on_frame and on_frame(obj, kind, payload) is False:
                             return conv_id, task_id, frames, None
                     answer_end = answer_end or detail.get("end") is True
@@ -621,7 +736,7 @@ class Scheduler:
                     raise UpstreamError(riskguard.RiskSignal(
                         RiskLevel.WARN, "sse_truncated", "上游连接提前结束，回复未完成"
                     ))
-                if not had_answer:
+                if not had_answer and not had_tool:
                     raise UpstreamError(riskguard.RiskSignal(
                         RiskLevel.WARN, "empty_response", "上游没有返回回复内容"
                     ))
@@ -633,6 +748,8 @@ class Scheduler:
 
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 # 用户停止或断开连接时，不重放请求，也不惩罚凭证。
+                raise
+            except InputError:
                 raise
             except UpstreamError as exc:
                 if not attempted:
@@ -838,6 +955,7 @@ class Handler(BaseHTTPRequestHandler):
         公网部署必须开，否则任何人都能消耗你的额度。
         """
         if not self.api_tokens:
+            self._request_owner = ""
             return True
         auth = self.headers.get("Authorization", "")
         token = ""
@@ -845,6 +963,7 @@ class Handler(BaseHTTPRequestHandler):
             token = auth[7:].strip()
         if not token:
             token = self.headers.get("x-api-key", "").strip()
+        self._request_owner = hashlib.sha256(token.encode("utf-8")).hexdigest()
         return token in self.api_tokens
 
     def _is_admin(self):
@@ -856,27 +975,7 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _flatten_messages(messages):
-        parts = []
-        for m in messages:
-            if not isinstance(m, dict):
-                raise ValueError("messages 的每一项必须是对象")
-            role = m.get("role") or "user"
-            if role not in ("system", "developer", "user", "assistant"):
-                raise ValueError("当前仅支持 system/developer/user/assistant 文本消息")
-            if m.get("tool_calls") or m.get("function_call"):
-                raise ValueError("当前尚未支持工具调用消息")
-            content = m.get("content")
-            if isinstance(content, list):
-                if any(not isinstance(c, dict) or c.get("type") != "text" or not isinstance(c.get("text"), str)
-                       for c in content):
-                    raise ValueError("当前仅支持文本内容块，尚未支持图片、音频或文件")
-                content = "\n".join(c["text"] for c in content)
-            if not isinstance(content, str):
-                raise ValueError("message.content 必须是字符串或文本内容块数组")
-            if not content.strip():
-                continue
-            parts.append(f"{role}: {content.strip()}")
-        return "\n\n".join(parts)
+        return CompletionRequest({"messages": messages}).query
 
     # ---------- 路由 ----------
 
@@ -958,26 +1057,13 @@ class Handler(BaseHTTPRequestHandler):
         options = body.get("stream_options") or {}
         if not isinstance(options, dict) or not isinstance(options.get("include_usage", False), bool):
             return self._send_error_json(400, "stream_options.include_usage 必须是布尔值")
-        if (body.get("tools") or body.get("functions")
-                or body.get("tool_choice") not in (None, "none")
-                or body.get("function_call") not in (None, "none")):
-            return self._send_error_json(400, "当前尚未支持 tools/tool_choice，请使用纯文本对话")
         if body.get("n", 1) != 1:
             return self._send_error_json(400, "当前仅支持 n=1")
-        response_format = body.get("response_format")
-        if response_format is not None and response_format != {"type": "text"}:
-            return self._send_error_json(400, "当前尚未支持结构化 response_format")
-
-        messages = body.get("messages")
-        if not isinstance(messages, list) or not messages:
-            return self._send_error_json(400, "messages 不能为空")
-
         try:
-            query = self._flatten_messages(messages)
-        except ValueError as exc:
+            request = CompletionRequest(body)
+            request.owner = self._request_owner
+        except (ValueError, TypeError) as exc:
             return self._send_error_json(400, str(exc))
-        if not query.strip():
-            return self._send_error_json(400, "messages 里没有可用的文本内容")
 
         model_id, display = self.resolver.resolve(requested)
         if not model_id:
@@ -986,11 +1072,79 @@ class Handler(BaseHTTPRequestHandler):
                 404, f"模型 '{requested}' 不存在。可用示例: {available}"
             )
 
+        try:
+            request.resume = self.scheduler.resume_for(request, model_id)
+        except InputError as exc:
+            return self._send_error_json(400, str(exc))
+        if request.buffered:
+            return self._handle_adapted(request, model_id, requested, stream, options.get("include_usage", False))
         if stream:
-            return self._handle_stream(query, model_id, requested, options.get("include_usage", False))
-        return self._handle_nonstream(query, model_id, requested or model_id)
+            return self._handle_stream(request.query, model_id, requested, options.get("include_usage", False), request=request)
+        return self._handle_nonstream(request.query, model_id, requested or model_id, request=request)
 
-    def _handle_nonstream(self, query, model_id, model_label):
+    def _handle_adapted(self, request, model_id, model_label, stream, include_usage):
+        collected, tools = [], NativeTools()
+        usage = None
+
+        def on_frame(obj, kind, payload):
+            nonlocal usage
+            if kind in ("answer", "reasoning"):
+                collected.append((kind, payload))
+            elif kind == "usage":
+                usage = merge_usage(usage, payload)
+            elif kind == "tool":
+                tools.consume(payload)
+            return True
+
+        try:
+            conv, task, _frames, error = self.scheduler.run_chain(request.query, model_id, on_frame, request=request)
+        except InputError as exc:
+            return self._send_error_json(400, str(exc))
+        except UpstreamError as exc:
+            return self._send_upstream_error(exc.signal)
+        if error:
+            return self._send_upstream_error(error)
+        try:
+            message, finish, bindings = tools.finish(request,
+                "".join(p for k, p in collected if k == "answer"),
+                "".join(p for k, p in collected if k == "reasoning"))
+        except (ValueError, TypeError, KeyError) as exc:
+            return self._send_error_json(502, "上游输出校验失败: " + str(exc), "upstream_error", "invalid_model_output")
+        self.scheduler.remember_tools(request, model_id, conv, task, bindings)
+        cid, created = make_completion_id(), int(time.time())
+        if not stream:
+            return self._send_json({"id": cid, "object": "chat.completion", "created": created,
+                "model": model_label, "choices": [{"index": 0, "message": message, "finish_reason": finish}], "usage": usage})
+
+        # 工具参数和 JSON 校验完成后再发送，避免客户端消费半截或不符合 Schema 的结果。
+        self._start_sse()
+
+        def emit(delta, finish_reason=None):
+            chunk = make_chunk(cid, model_label, delta, finish_reason, created=created)
+            if include_usage:
+                chunk["usage"] = None
+            self._write_sse(chunk)
+
+        emit({"role": "assistant", "content": ""})
+        if message.get("reasoning_content"):
+            emit({"reasoning_content": message["reasoning_content"]})
+        if message.get("content"):
+            emit({"content": message["content"]})
+        for index, call in enumerate(message.get("tool_calls", [])):
+            emit({"tool_calls": [{"index": index, "id": call["id"], "type": "function",
+                                  "function": {"name": call["function"]["name"], "arguments": ""}}]})
+            emit({"tool_calls": [{"index": index, "function": {"arguments": call["function"]["arguments"]}}]})
+        if message.get("function_call"):
+            emit({"function_call": message["function_call"]})
+        emit({}, finish_reason=finish)
+        if include_usage:
+            chunk = make_chunk(cid, model_label, {}, created=created)
+            chunk.update(choices=[], usage=usage)
+            self._write_sse(chunk)
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
+    def _handle_nonstream(self, query, model_id, model_label, request=None):
         collected = []
         usage = None
 
@@ -1000,12 +1154,16 @@ class Handler(BaseHTTPRequestHandler):
                 collected.append((kind, payload))
             elif kind == "usage":
                 usage = merge_usage(usage, payload)
+            elif kind == "tool":
+                raise UpstreamError(riskguard.RiskSignal(RiskLevel.WARN, "unexpected_tool", "上游调用了未启用的工具"))
             return True
 
         try:
             _c, _t, _frames, error = self.scheduler.run_chain(
-                query, model_id, on_frame
+                query, model_id, on_frame, **({"request": request} if request is not None else {})
             )
+        except InputError as exc:
+            return self._send_error_json(400, str(exc))
         except UpstreamError as exc:
             return self._send_upstream_error(exc.signal)
 
@@ -1030,7 +1188,7 @@ class Handler(BaseHTTPRequestHandler):
             }
         )
 
-    def _handle_stream(self, query, model_id, model_label, include_usage=False):
+    def _handle_stream(self, query, model_id, model_label, include_usage=False, request=None):
         # 先建立上游再发响应头，这样建连失败还能返回正常 JSON 错误
         cid = make_completion_id()
         created = int(time.time())
@@ -1048,6 +1206,8 @@ class Handler(BaseHTTPRequestHandler):
             if kind == "usage":
                 usage = merge_usage(usage, payload)
                 return True
+            if kind == "tool":
+                raise UpstreamError(riskguard.RiskSignal(RiskLevel.WARN, "unexpected_tool", "上游调用了未启用的工具"))
             if not started and kind in ("answer", "reasoning", "heartbeat"):
                 # 首帧到达才正式开 SSE
                 self._start_sse()
@@ -1061,8 +1221,10 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             _c, _t, _frames, error = self.scheduler.run_chain(
-                query, model_id, on_frame
+                query, model_id, on_frame, **({"request": request} if request is not None else {})
             )
+        except InputError as exc:
+            return self._send_error_json(400, str(exc))
         except UpstreamError as exc:
             error = exc.signal
 

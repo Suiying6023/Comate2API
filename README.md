@@ -1,8 +1,11 @@
 # Comate2API
 
-把快码Comate账号凭证转成 OpenAI 兼容的文本对话 API。Python 3.8+，零第三方依赖。
+把快码Comate账号凭证转成 OpenAI 兼容的对话 API。Python 3.8+，零第三方依赖。
 
 - 流式 / 非流式对话、模型名称映射
+- 工具调用与结果续接：`tools` / `tool_choice`，兼容 `functions`
+- 图片输入：base64 data URL / HTTP(S) URL
+- JSON / JSON Schema 输出（常用子集，返回前校验）
 - 真实 token 用量、reasoning_content
 - API Key 鉴权、限流、凭证冷却
 - Windows、Linux、Docker
@@ -33,6 +36,8 @@ docker compose up -d
 
 运行 `python smoke_test.py` 验证流式 / 非流式调用（调用两次模型）。
 
-暂不支持工具调用、多模态和结构化输出；采样、输出长度参数不透传。
+工具和 JSON 响应先完整接收、校验，再以 SSE 返回。图片使用支持视觉的模型（已验证 GLM-5v-Turbo）。
+
+音频、视频和文件暂未适配；采样、输出长度参数不透传。
 
 [MIT License](LICENSE)

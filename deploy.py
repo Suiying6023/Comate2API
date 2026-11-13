@@ -26,7 +26,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # 只拷源码，不拷凭证
-COPY riskguard.py comate2api.py start.py license_finder.py ./
+COPY riskguard.py comate2api.py start.py license_finder.py openai_compat.py schema_utils.py ./
 
 ENV PYTHONUNBUFFERED=1 \\
     PYTHONDONTWRITEBYTECODE=1 \\
