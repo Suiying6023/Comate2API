@@ -203,7 +203,8 @@ def detect_lan_ips():
 
         if os.name == "nt":
             out = subprocess.run(
-                ["ipconfig"], capture_output=True, text=True, timeout=8
+                ["ipconfig"], capture_output=True, text=True,
+                encoding="mbcs", errors="replace", timeout=8
             ).stdout
             for line in out.splitlines():
                 line = line.strip()
@@ -304,7 +305,8 @@ def check_port(host, port):
             import subprocess
 
             out = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=5
+                cmd, shell=True, capture_output=True, text=True,
+                encoding="mbcs", errors="replace", timeout=5
             ).stdout
             for line in out.splitlines():
                 if f":{port}" in line:
@@ -317,6 +319,8 @@ def check_port(host, port):
                                 shell=True,
                                 capture_output=True,
                                 text=True,
+                                encoding="mbcs",
+                                errors="replace",
                                 timeout=5,
                             ).stdout.strip()
                             name = p.split('","')[0].strip('"') if p else pid
@@ -336,7 +340,8 @@ def _pid_alive(pid):
         try:
             r = subprocess.run(
                 f'tasklist /FI "PID eq {pid}" /FO CSV /NH',
-                shell=True, capture_output=True, text=True, timeout=5,
+                shell=True, capture_output=True, text=True,
+                encoding="mbcs", errors="replace", timeout=5,
             )
             return str(pid) in r.stdout
         except Exception:
@@ -440,10 +445,10 @@ def main():
             log(f"[warn] 服务已在运行（PID {old_pid}）")
             log()
             log("  如需重启：")
-            log("    Windows: 先运行 停止服务.bat")
+            log("    Windows: 在项目根目录运行 启动服务.bat restart")
             log("    Linux  : ./comate2api.sh restart")
             log()
-            log("  查看状态： ./comate2api.sh status  或  状态.bat")
+            log("  查看状态： ./comate2api.sh status  或  项目根目录的 启动服务.bat status")
             log()
             return 0
         # PID 文件是残留的，清掉

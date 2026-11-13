@@ -5,7 +5,7 @@
 生成后直接交给朋友，或者拷到 Linux 服务器上用：
   python deploy.py --docker         生成 Dockerfile 和 docker-compose.yml
   python deploy.py --systemd        生成 systemd service
-  python deploy.py --windows        生成 Windows 开机自启脚本
+  python deploy.py --windows        说明 Windows 启停用法
 
 不会生成任何含凭证的内容 —— 凭证由使用者自己填。
 """
@@ -91,7 +91,7 @@ COMATE_COOLDOWN=300
 """
     (BASE / ".env.example").write_text(env_example, encoding="utf-8")
 
-    gitignore = BASE / ".gitignore"
+    gitignore = BASE.parent / ".gitignore"
     entries = [".env", "service.env", "cred.json", "config.json", "connection.json",
                "server.pid", "server.log", "data/", "__pycache__/", ".venv/"]
     existing = ""
@@ -111,6 +111,7 @@ COMATE_COOLDOWN=300
     print("  .gitignore（已加入凭证保护）")
     print()
     print("用法：")
+    print("  cd 主程序    # 从项目根目录进入")
     print("  cp .env.example .env")
     print("  # 编辑 .env 填入 license")
     print("  docker compose up -d")
@@ -148,7 +149,7 @@ WantedBy=multi-user.target
 """
     import sys
 
-    install_dir = "/opt/comate2api" if os.name == "nt" else str(BASE)
+    install_dir = "/opt/comate2api/主程序" if os.name == "nt" else str(BASE)
     python_bin = "/usr/bin/python3" if os.name == "nt" else sys.executable
     content = unit.replace("__DIR__", install_dir).replace("__PYTHON__", python_bin)
     out = BASE / "comate2api.service"
@@ -170,6 +171,7 @@ WantedBy=multi-user.target
     print("  service.env.example")
     print()
     print("用法：")
+    print("  cd 主程序    # 从项目根目录进入")
     print("  cp service.env.example service.env")
     print("  chmod 600 service.env")
     print("  # 编辑 service.env 填入 license 和 token")
@@ -186,11 +188,11 @@ def gen_windows_autostart():
     且用户注销后行为不一致。启停脚本更可靠也更直观。
     """
     print("Windows 使用启停脚本（不做开机自启）：")
-    print("  启动服务.bat   双击启动，自动记录 PID")
-    print("  停止服务.bat   停止服务（支持 stop/restart/status）")
+    print("  项目根目录的 启动服务.bat   双击启动，自动记录 PID")
+    print("  启动服务.bat start / stop / restart / status   后台启动、停止、重启、状态")
     print()
     print("  Windows 下如需常驻，建议用 Docker Desktop 跑：")
-    print("    docker compose up -d    # 自带 restart: unless-stopped")
+    print("    cd 主程序 && docker compose up -d    # 自带 restart: unless-stopped")
     print()
 
 
