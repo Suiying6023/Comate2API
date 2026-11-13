@@ -1,6 +1,6 @@
 # Comate2API
 
-把百度文心快码（Comate）账号凭证转成 OpenAI 兼容的文本对话 API。Python 3.8+，零第三方依赖。
+把快码Comate账号凭证转成 OpenAI 兼容的文本对话 API。Python 3.8+，零第三方依赖。
 
 - 流式 / 非流式对话、模型名称映射
 - 真实 token 用量、reasoning_content
